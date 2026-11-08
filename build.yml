@@ -1,0 +1,68 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '*.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip the project
+        run: |
+          ls -la
+          ZIP=$(ls -1 *.zip 2>/dev/null | head -n 1)
+          if [ -z "$ZIP" ]; then echo "No .zip file found in the repo root"; exit 1; fi
+          echo "Using $ZIP"
+          mkdir -p /tmp/src
+          unzip -q "$ZIP" -d /tmp/src
+          SETTINGS=$(find /tmp/src -maxdepth 3 -name settings.gradle | head -n 1)
+          if [ -z "$SETTINGS" ]; then echo "settings.gradle not found inside the zip"; find /tmp/src -maxdepth 3 | head -50; exit 1; fi
+          ROOT=$(dirname "$SETTINGS")
+          echo "Project root: $ROOT"
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+
+      - name: Show the real errors (only if the build failed)
+        if: failure()
+        run: |
+          echo "=========== ERRORS ==========="
+          grep -n "error:\|What went wrong\|FAILED\|Execution failed" -A6 /tmp/build.log | head -150 || true
+
+      - name: Name the APK
+        run: cp "$PROJECT_ROOT/app/build/outputs/apk/debug/app-debug.apk" Jarvis.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis
+          path: Jarvis.apk
+
+      - name: Publish release (direct download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Jarvis build ${{ github.run_number }}
+          files: Jarvis.apk
