@@ -1,0 +1,72 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '*.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip the project
+        run: |
+          ZIP=$(ls -1 *.zip 2>/dev/null | head -n 1)
+          if [ -z "$ZIP" ]; then echo "::error::No .zip file in the repo root"; exit 1; fi
+          mkdir -p /tmp/src
+          unzip -q "$ZIP" -d /tmp/src
+          SETTINGS=$(find /tmp/src -maxdepth 3 -name settings.gradle | head -n 1)
+          if [ -z "$SETTINGS" ]; then echo "::error::settings.gradle not found in the zip"; exit 1; fi
+          echo "PROJECT_ROOT=$(dirname "$SETTINGS")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build debug APK
+        id: build
+        working-directory: ${{ env.PROJECT_ROOT }}
+        continue-on-error: true
+        run: |
+          set +e
+          gradle assembleDebug --no-daemon --console=plain > /tmp/build.log 2>&1
+          CODE=$?
+          tail -n 5 /tmp/build.log
+          exit $CODE
+
+      - name: ERRORS (read this if the build failed)
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "=========== ERRORS ==========="
+          grep -m 8 "error:\|What went wrong" -A3 /tmp/build.log | sed 's/^/::error::/' || true
+          echo "=========== LAST 60 LINES ==========="
+          tail -n 60 /tmp/build.log
+          exit 1
+
+      - name: Name the APK
+        run: cp "$PROJECT_ROOT/app/build/outputs/apk/debug/app-debug.apk" Jarvis.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis
+          path: Jarvis.apk
+
+      - name: Publish release (direct download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Jarvis build ${{ github.run_number }}
+          files: Jarvis.apk
